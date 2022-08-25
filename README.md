@@ -8,7 +8,7 @@ Options:
   -d<num>   Downsampling factor (default: 125)
   -n<num>   Number of stages (default: 3)
   -z<num>   Padding zero in upsampling interporation. 0:off 1:on (default: 1).
-  -o<file>  Output filename (default: output.wav)
+  -o<file>  Output filename (default: output.raw)
   -h        Print this help.
 ```
 
