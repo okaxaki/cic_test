@@ -10,7 +10,7 @@ static int U = 192;
 static int D = 125;
 static int N = 3;
 static int zero_stuffing = 1;
-static char out_file[FILENAME_MAX] = "output.wav";
+static char out_file[FILENAME_MAX] = "output.raw";
 
 static int16_t *upsample(int16_t *samples, long length, int M)
 {
