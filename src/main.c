@@ -50,7 +50,8 @@ static int16_t *convert(int16_t *samples, long length, int D, int N)
     // 振幅は最大で M^N 倍になる（最終出力をこれで割る）
     int64_t range = pow(M, N);
 
-    int gain = (zero_stuffing != 0) ? U : 1;
+    // zero stuffing する場合は音量が小さくなるので音量を上げる 0.8 は経験則
+    double gain = (zero_stuffing != 0) ? U * 0.8 : 1;
 
     printf("register width: %d bits\n", bits);
     if (bits > 64)
