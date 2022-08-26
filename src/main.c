@@ -50,7 +50,8 @@ static int16_t *convert(int16_t *samples, long length, int D, int N)
     // 振幅は最大で M^N 倍になる（最終出力をこれで割る）
     int64_t range = pow(M, N);
 
-    // zero stuffing する場合は音量が小さくなるので音量を上げる 0.8 は経験則
+    // zero stuffing する場合は音量が小さくなるので音量を上げる
+    // U * 0.8 は経験則で、構成によってはオーバーフローするかもしれません
     double gain = (zero_stuffing != 0) ? U * 0.8 : 1;
 
     printf("register width: %d bits\n", bits);
@@ -100,6 +101,7 @@ static int16_t *convert(int16_t *samples, long length, int D, int N)
             int64_t o = dout[N - 1] / range * gain;
             if (o < -32768 || 32767 < o)
             {
+                // もしオーバーフローしたら gain を見直してください
                 printf("Error: overflow at index=%ld, value=%ld\n", (long)ridx, (long)o);
                 exit(1);
             }
