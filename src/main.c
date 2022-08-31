@@ -12,21 +12,6 @@ static int N = 3;
 static int zero_stuffing = 1;
 static char out_file[FILENAME_MAX] = "output.raw";
 
-// CICを使わない単なるアップサンプリング
-static int16_t *upsample(int16_t *samples, long length, int M)
-{
-    int16_t *result = malloc(sizeof(int16_t) * length * M);
-    for (long i = 0; i < length; i++)
-    {
-        result[i * M] = samples[i];
-        for (int j = 1; j < M; j++)
-        {
-            result[i * M + j] = (zero_stuffing != 0) ? 0 : samples[i];
-        }
-    }
-    return result;
-}
-
 static int16_t getInt16LE(uint8_t *buf)
 {
     return (int16_t)((buf[1] << 8) | buf[0]);
@@ -63,13 +48,13 @@ static int16_t *interporate(int16_t *samples, long length, int U, int N)
         exit(1);
     }
 
-    int64_t ibuf[N], iout[N]; // integrator
     int64_t dbuf[N], dout[N]; // diffrentiator
+    int64_t ibuf[N], iout[N]; // integrator
 
-    memset(ibuf, 0x00, sizeof(int64_t) * N);
-    memset(iout, 0x00, sizeof(int64_t) * N);
     memset(dbuf, 0x00, sizeof(int64_t) * N);
     memset(dout, 0x00, sizeof(int64_t) * N);
+    memset(ibuf, 0x00, sizeof(int64_t) * N);
+    memset(iout, 0x00, sizeof(int64_t) * N);
 
     int16_t *result = calloc(length * M, sizeof(int16_t));
 
@@ -79,25 +64,25 @@ static int16_t *interporate(int16_t *samples, long length, int U, int N)
     {
         int16_t x = getInt16LE((uint8_t *)(samples + ridx));
         ridx++;
-        iout[0] = x - ibuf[0];
-        ibuf[0] = x;
+        dout[0] = x - dbuf[0];
+        dbuf[0] = x;
         for (int n = 1; n < N; n++)
         {
-            iout[n] = iout[n - 1] - ibuf[n];
-            ibuf[n] = iout[n - 1];
+            dout[n] = dout[n - 1] - dbuf[n];
+            dbuf[n] = dout[n - 1];
         }
 
-        for (int i = 0; i < M; i++) // decimation for CIC flow
+        for (int i = 0; i < M; i++) // upsampling for CIC flow
         {
-            int64_t inp = (zero_stuffing == 0 || i == 0) ? iout[N - 1] : 0;
-            dout[0] = inp + dbuf[0];
-            dbuf[0] = dout[0];
+            int64_t inp = (zero_stuffing == 0 || i == 0) ? dout[N - 1] : 0;
+            iout[0] = inp + ibuf[0];
+            ibuf[0] = iout[0];
             for (int n = 1; n < N; n++)
             {
-                dout[n] = dout[n - 1] + dbuf[n];
-                dbuf[n] = dout[n];
+                iout[n] = iout[n - 1] + ibuf[n];
+                ibuf[n] = iout[n];
             }
-            int64_t o = dout[N - 1] / range * gain;
+            int64_t o = iout[N - 1] / range * gain;
             if (o < -32768 || 32767 < o)
             {
                 // もしオーバーフローしたら gain を見直してください
