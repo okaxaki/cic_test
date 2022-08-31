@@ -12,6 +12,7 @@ static int N = 3;
 static int zero_stuffing = 1;
 static char out_file[FILENAME_MAX] = "output.raw";
 
+// CICを使わない単なるアップサンプリング
 static int16_t *upsample(int16_t *samples, long length, int M)
 {
     int16_t *result = malloc(sizeof(int16_t) * length * M);
@@ -38,7 +39,82 @@ static void putInt16LE(uint8_t *buf, int16_t data)
     buf[1] = (data >> 8) & 0xff;
 }
 
-static int16_t *convert(int16_t *samples, long length, int D, int N)
+// - U: アップサンプリング比
+// - N: CICステージ数
+static int16_t *interporate(int16_t *samples, long length, int U, int N)
+{
+    int M = U;
+
+    // バッファ。
+    // 振幅は最大で M^N 倍まで格納できる必要があるので（入力ビット幅 + N*Log2(M)）ビット必要
+    int bits = 16 + ceil(N * log2(M));
+
+    // 振幅は最大で M^N 倍になる（最終出力をこれで割る）
+    int64_t range = pow(M, N);
+
+    // zero stuffing する場合は音量が小さくなるので音量を上げる
+    // M * 0.8 は経験則で、構成によってはオーバーフローするかもしれません
+    double gain = (zero_stuffing != 0) ? M * 0.8 : 1;
+
+    printf("register width: %d bits\n", bits);
+    if (bits > 64)
+    {
+        printf("Error: too long buffer bits\n");
+        exit(1);
+    }
+
+    int64_t ibuf[N], iout[N]; // integrator
+    int64_t dbuf[N], dout[N]; // diffrentiator
+
+    memset(ibuf, 0x00, sizeof(int64_t) * N);
+    memset(iout, 0x00, sizeof(int64_t) * N);
+    memset(dbuf, 0x00, sizeof(int64_t) * N);
+    memset(dout, 0x00, sizeof(int64_t) * N);
+
+    int16_t *result = calloc(length * M, sizeof(int16_t));
+
+    long ridx = 0, widx = 0;
+
+    while (ridx < length)
+    {
+        int16_t x = getInt16LE((uint8_t *)(samples + ridx));
+        ridx++;
+        iout[0] = x - ibuf[0];
+        ibuf[0] = x;
+        for (int n = 1; n < N; n++)
+        {
+            iout[n] = iout[n - 1] - ibuf[n];
+            ibuf[n] = iout[n - 1];
+        }
+
+        for (int i = 0; i < M; i++) // decimation for CIC flow
+        {
+            int64_t inp = (zero_stuffing == 0 || i == 0) ? iout[N - 1] : 0;
+            dout[0] = inp + dbuf[0];
+            dbuf[0] = dout[0];
+            for (int n = 1; n < N; n++)
+            {
+                dout[n] = dout[n - 1] + dbuf[n];
+                dbuf[n] = dout[n];
+            }
+            int64_t o = dout[N - 1] / range * gain;
+            if (o < -32768 || 32767 < o)
+            {
+                // もしオーバーフローしたら gain を見直してください
+                printf("Error: overflow at index=%ld, value=%ld\n", (long)ridx, (long)o);
+                exit(1);
+            }
+            putInt16LE((uint8_t *)(result + widx), o);
+            widx++;
+        }
+    }
+
+    return result;
+}
+
+// - D: ダウンサンプリング比
+// - N: CICステージ数
+static int16_t *decimate(int16_t *samples, long length, int D, int N)
 {
     // デシメーション比 通常はダウンサンプリング比と同じ
     int M = D;
@@ -49,10 +125,6 @@ static int16_t *convert(int16_t *samples, long length, int D, int N)
 
     // 振幅は最大で M^N 倍になる（最終出力をこれで割る）
     int64_t range = pow(M, N);
-
-    // zero stuffing する場合は音量が小さくなるので音量を上げる
-    // U * 0.8 は経験則で、構成によってはオーバーフローするかもしれません
-    double gain = (zero_stuffing != 0) ? U * 0.8 : 1;
 
     printf("register width: %d bits\n", bits);
     if (bits > 64)
@@ -98,13 +170,7 @@ static int16_t *convert(int16_t *samples, long length, int D, int N)
 
         if (ridx % D == 0) // decimation for Output
         {
-            int64_t o = dout[N - 1] / range * gain;
-            if (o < -32768 || 32767 < o)
-            {
-                // もしオーバーフローしたら gain を見直してください
-                printf("Error: overflow at index=%ld, value=%ld\n", (long)ridx, (long)o);
-                exit(1);
-            }
+            int64_t o = dout[N - 1] / range;
             putInt16LE((uint8_t *)(result + widx), o);
             widx++;
         }
@@ -113,16 +179,16 @@ static int16_t *convert(int16_t *samples, long length, int D, int N)
     return result;
 }
 
-#define HLPMSG                                                                              \
-    "Usage: cic [options] <file.raw>\n"                                                     \
-    "\n"                                                                                    \
-    "Options: \n"                                                                           \
-    "  -u<num>   Upsampling factor (default: %d)\n"                                         \
-    "  -d<num>   Downsampling factor (default: %d)\n"                                       \
-    "  -n<num>   Number of stages (default: %d)\n"                                          \
-    "  -z<num>   Padding zero in upsampling interporation. 0:off 1:on (default: %d).\n" \
-    "  -o<file>  Output filename (default: %s)\n"                                           \
-    "  -h        Print this help.\n"                                                        \
+#define HLPMSG                                                                          \
+    "Usage: cic [options] <file.raw>\n"                                                 \
+    "\n"                                                                                \
+    "Options: \n"                                                                       \
+    "  -u<num>   Upsampling factor (default: %d)\n"                                     \
+    "  -d<num>   Downsampling factor (default: %d)\n"                                   \
+    "  -n<num>   Number of stages (default: %d)\n"                                      \
+    "  -z<num>   Use zero stuffing on upsampling. 0:off 1:on (default:%d).\n" \
+    "  -o<file>  Output filename (default: %s)\n"                                       \
+    "  -h        Print this help.\n"                                                    \
     "\n"
 
 static void print_help()
@@ -181,11 +247,11 @@ int main(int argc, char *argv[])
 
     char *inp_file = argv[optind];
 
-    printf("input: %s\n", inp_file);
+    printf("Input: %s\n", inp_file);
     printf("Upsampling factor: %d\n", U);
     printf("Downsampling factor: %d\n", D);
     printf("Number of Cascading: %d\n", N);
-    printf("output: %s\n", out_file);
+    printf("Output: %s\n", out_file);
     printf("\n");
 
     FILE *fp = fopen(inp_file, "rb");
@@ -213,11 +279,11 @@ int main(int argc, char *argv[])
     fclose(fp);
     printf("src: %ld samples\n", src_length);
 
-    int16_t *mid = upsample(src, src_length, U);
+    int16_t *mid = interporate(src, src_length, U, N);
     long mid_length = src_length * U;
     printf("mid: %ld samples\n", mid_length);
 
-    int16_t *dst = convert(mid, mid_length, D, N);
+    int16_t *dst = decimate(mid, mid_length, D, N);
     long dst_length = mid_length / D;
     printf("dst: %ld samples\n", dst_length);
 
